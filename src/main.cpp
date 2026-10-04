@@ -17,6 +17,11 @@
 #include <cwchar>
 #include <utility>
 #include <commdlg.h>
+#include <shellapi.h>
+
+#ifndef NPPNODEJS_DEBUG_DEFAULT
+#define NPPNODEJS_DEBUG_DEFAULT 0
+#endif
 
 #include "PluginInterface.h"
 #include "Notepad_plus_msgs.h"
@@ -59,6 +64,7 @@ static const wchar_t OUTPUT_CLASS_NAME[] = L"NppNodeJS_OutputPane";
 static std::wstring g_outputTitle = L"NppNodeJS Output";
 static std::wstring g_scriptFolder;
 static std::wstring g_debugLogPath;
+static bool g_debugEnabled = (NPPNODEJS_DEBUG_DEFAULT != 0);
 static std::wstring g_menuJsonPath;
 static const int OUTPUT_DLG_ID = 0x4E4A;
 static DockedWidgetData g_outputDock{};
@@ -159,7 +165,7 @@ static std::string debugWideToUtf8(const std::wstring& s)
 
 static void debugLog(const std::wstring& message)
 {
-    if (g_debugLogPath.empty()) return;
+    if (!g_debugEnabled || g_debugLogPath.empty()) return;
     SYSTEMTIME st{};
     GetLocalTime(&st);
     std::ofstream f(g_debugLogPath.c_str(), std::ios::binary | std::ios::app);
@@ -378,8 +384,15 @@ static void setMenuJsonPath()
 
 static void showAbout()
 {
-    MessageBoxW(g_nppData._nppHandle, L"NppNodeJS\\r\\n\\r\\nPhase 2: Node stdout/stderr Output Pane",
-                L"NppNodeJS", MB_OK | MB_ICONINFORMATION);
+    const HINSTANCE result = ShellExecuteW(
+        g_nppData._nppHandle, L"open",
+        L"https://github.com/seantw/NppNodeJS",
+        nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        MessageBoxW(g_nppData._nppHandle,
+                    L"Unable to open the NppNodeJS GitHub page.",
+                    L"NppNodeJS", MB_OK | MB_ICONWARNING);
+    }
 }
 
 static HWND currentScintilla()
@@ -1758,7 +1771,7 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
     debugLog(L"runNodeScript path=" + path);
     std::lock_guard<std::mutex> lock(g_processMutex);
     if (g_processRunning.load()) {
-        MessageBoxW(g_nppData._nppHandle, L"目前已有 Node.js script 正在執行。",
+        MessageBoxW(g_nppData._nppHandle, L"A Node.js script is already running.",
                     L"NppNodeJS", MB_OK | MB_ICONWARNING);
         return;
     }
@@ -1789,7 +1802,7 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
             if (outRead) CloseHandle(outRead); if (outWrite) CloseHandle(outWrite);
             if (errRead) CloseHandle(errRead); if (errWrite) CloseHandle(errWrite);
             if (g_hotkeyWnd) PostMessageW(g_hotkeyWnd, WM_NPPNODE_OUTPUT, 0,
-                reinterpret_cast<LPARAM>(new std::wstring(L"[NppNodeJS] 無法建立 stdout/stderr pipe。\r\n")));
+                reinterpret_cast<LPARAM>(new std::wstring(L"[NppNodeJS] Unable to create stdout/stderr pipes.\r\n")));
             g_processRunning.store(false);
             return;
         }
@@ -1822,7 +1835,7 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
         if (!ok) {
             const DWORD err = GetLastError();
             debugLog(L"CreateProcess FAILED error=" + std::to_wstring(err));
-            std::wstring msg = L"[NppNodeJS] 無法啟動 node.exe，錯誤碼：" + std::to_wstring(err) + L"\r\n";
+            std::wstring msg = L"[NppNodeJS] Unable to start node.exe. Error code: " + std::to_wstring(err) + L"\r\n";
             if (g_hotkeyWnd) PostMessageW(g_hotkeyWnd, WM_NPPNODE_OUTPUT, 0,
                 reinterpret_cast<LPARAM>(new std::wstring(std::move(msg))));
             CloseHandle(inWrite);
@@ -2034,8 +2047,10 @@ static bool installMenus(const std::wstring& jsonPath)
     }
     cJSON* scriptFolderItem = cJSON_GetObjectItemCaseSensitive(root, "script_folder");
     cJSON* outputTitleItem = cJSON_GetObjectItemCaseSensitive(root, "output_pan_title");
+    cJSON* debugItem = cJSON_GetObjectItemCaseSensitive(root, "debug");
     cJSON* menuItem = cJSON_GetObjectItemCaseSensitive(root, "menu");
-    if (!cJSON_IsString(scriptFolderItem) || !cJSON_IsString(outputTitleItem) || !cJSON_IsObject(menuItem)) {
+    if (!cJSON_IsString(scriptFolderItem) || !cJSON_IsString(outputTitleItem) ||
+        !cJSON_IsObject(menuItem) || (debugItem && !cJSON_IsBool(debugItem))) {
         cJSON_Delete(root);
         MessageBoxW(g_nppData._nppHandle, L"menu.json must contain string 'script_folder', string 'output_pan_title', and object 'menu'.", L"NppNodeJS", MB_OK | MB_ICONERROR);
         return false;
@@ -2065,7 +2080,10 @@ static bool installMenus(const std::wstring& jsonPath)
     const std::wstring folder = resolveScriptFolder(jsonPath, configuredFolder);
     g_menuJsonPath = fullPath(jsonPath);
     g_scriptFolder = folder;
-    g_debugLogPath = joinPath(g_scriptFolder, L"NppNodeJS-debug.log");
+    // An explicit menu.json boolean overrides the build-time default.
+    // When omitted, NPPNODEJS_DEBUG_DEFAULT determines whether logging is enabled.
+    g_debugEnabled = debugItem ? cJSON_IsTrue(debugItem) : (NPPNODEJS_DEBUG_DEFAULT != 0);
+    g_debugLogPath = g_debugEnabled ? joinPath(g_scriptFolder, L"NppNodeJS-debug.log") : L"";
     debugLog(L"=== NppNodeJS debug session ===");
     debugLog(L"menu.json=" + jsonPath);
     debugLog(L"script_folder=" + g_scriptFolder);

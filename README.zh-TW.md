@@ -19,6 +19,7 @@ NppNodeJS 是讓 Notepad++ 直接執行 Node.js 腳本的 x64 Plugin，讓您自
 - **Ctrl + 左鍵**點選腳本選單項目，可在 Notepad++ 開啟腳本而不執行。
 - Notepad++ 關閉時會清理正在執行的 Node.js 程序。
 - **Set menu.json Path...** 可讓您選擇 `menu.json` 的位置，不需要直接修改 `Program Files` 下的檔案。
+- **About NppNodeJS** 會直接開啟 [NppNodeJS GitHub repository](https://github.com/seantw/NppNodeJS)。
 
 ## 系統需求
 

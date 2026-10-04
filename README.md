@@ -19,6 +19,7 @@ Write your own `.js` or `.mjs` scripts, add them to `menu.json`, and run them fr
 - **Ctrl+left-click** a script menu item to open the script in Notepad++ without executing it.
 - Running Node.js processes are cleaned up when Notepad++ shuts down.
 - **Set menu.json Path...** lets you choose the `menu.json` file without modifying files under `Program Files`.
+- **About NppNodeJS** opens the [NppNodeJS GitHub repository](https://github.com/seantw/NppNodeJS).
 
 ## Requirements
 
@@ -298,7 +299,6 @@ The included `package.json` defines the package import alias:
 3. Run `build-x64.bat`.
 4. The DLL will be written to `build/NppNodeJS.dll`.
 
-The build script uses C++17 and produces a Windows x64 DLL.
 
 ## License
 
