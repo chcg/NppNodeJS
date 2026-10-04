@@ -1,0 +1,19 @@
+{
+  "script_folder": "./script",
+  "output_pan_title": "Output Pane",
+  "menu": {
+    "Tests(&1)": {
+      "Output Pane Basic Test": "hello-world.js",
+      "Alert Test (.js)": "test-alert.js",
+      "Alert Test (.mjs)": "test-alert.mjs",
+      "Prompt Test (.js)": "test-prompt.js",
+      "Prompt Test (.mjs)": "test-prompt.mjs",
+      "Confirm Test (.js)": "test-confirm.js",
+      "Confirm Test (.mjs)": "test-confirm.mjs",
+      "getFileName / getCursor Test": "test-file-cursor.js",
+      "getLine / setLine Test": "test-line.js",
+      "getSelection / setSelection Test": "test-selection.js",
+      "getText / setText Test": "test-text.js"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "imports": {
+    "#menu-helper": "./menu-helper.js",
+    "#npp-helper": "./menu-helper.js"
+  }
+}
