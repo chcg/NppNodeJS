@@ -18,6 +18,9 @@ Write your own `.js` or `.mjs` scripts, add them to `menu.json`, and run them fr
 - CommonJS and ES Module support.
 - **Ctrl+left-click** a script menu item to open the script in Notepad++ without executing it.
 - Running Node.js processes are cleaned up when Notepad++ shuts down.
+- **Open Scripts Folder** opens the configured script directory in Windows Explorer.
+- **Open menu.json** opens the currently active configuration file in Notepad++.
+- **Rebuild Menu** rereads `menu.json` and rebuilds the NppNodeJS script menus without restarting Notepad++.
 - **Set menu.json Path...** lets you choose the `menu.json` file without modifying files under `Program Files`.
 - **About NppNodeJS** opens the [NppNodeJS GitHub repository](https://github.com/seantw/NppNodeJS).
 
@@ -88,6 +91,33 @@ You can change the `menu.json` location from **Plugins > NppNodeJS > Set menu.js
 The first time NppNodeJS runs, if no custom path has been configured, it uses the `menu.json` next to `NppNodeJS.dll`.
 
 When using a custom `menu.json` location, keep `menu-helper.js` and `package.json` in the same project directory when your scripts use the `#menu-helper` or `#npp-helper` package import aliases. This preserves the existing Node.js package import configuration.
+
+### NppNodeJS menu commands
+
+The **Plugins > NppNodeJS** menu provides these configuration commands:
+
+- **Open Scripts Folder** opens the directory resolved from `script_folder`. If the directory does not exist, NppNodeJS asks whether to create it.
+- **Open menu.json** opens the currently active `menu.json` in Notepad++.
+- **Rebuild Menu** rereads the current `menu.json` and rebuilds the script menus. A valid configuration takes effect immediately; if the new configuration is invalid, the existing menu is kept.
+- **Set menu.json Path...** selects a different `menu.json` and stores that path in the user's Notepad++ plugin configuration.
+
+### Missing script files
+
+If a menu item points to a `.js` or `.mjs` file that does not exist, selecting that item asks whether to create it. After confirmation, NppNodeJS creates the file and opens it in Notepad++ instead of executing it.
+
+The generated template matches the script type. A CommonJS `.js` file starts with:
+
+```js
+const npp = require('#menu-helper');
+```
+
+An ES Module `.mjs` file starts with:
+
+```js
+import npp from '#menu-helper';
+```
+
+The new file is not executed until you select the menu item again.
 
 ### `script_folder`
 
@@ -197,14 +227,11 @@ A few points to note:
 
 - The shortcut is separated from the visible menu text by a **tab character** (`\t`).
 - The shortcut is registered by Windows through `RegisterHotKey`, so a combination already used by Windows or another application may fail to register.
-- Avoid assigning the same shortcut to multiple scripts.
-- `Ctrl+left-click` is a built-in NppNodeJS shortcut and does not need to be configured in `menu.json`.
 
 ## Running scripts
 
-- **Left-click:** execute the selected script.
-- **Keyboard shortcut:** execute the script assigned to that shortcut.
-- **Ctrl+left-click:** open the script in Notepad++ without executing it.
+- Click the desired script in the generated menu to execute it. (Feels a bit obvious.)
+- To open a script directly for editing, hold Ctrl and click it in the menu.
 
 The Output Pane is cleared at the beginning of an execution and reused for subsequent runs. It is not created or shown merely because the plugin starts.
 

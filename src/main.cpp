@@ -18,6 +18,7 @@
 #include <utility>
 #include <commdlg.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #ifndef NPPNODEJS_DEBUG_DEFAULT
 #define NPPNODEJS_DEBUG_DEFAULT 0
@@ -35,12 +36,19 @@ static NppData g_nppData{};
 static HMODULE g_hModule = nullptr;
 
 static void showAbout();
+static void openScriptsFolder();
+static void openMenuJson();
+static void rebuildMenu();
 static void setMenuJsonPath();
-static bool installMenus(const std::wstring& jsonPath);
+static bool installMenus(const std::wstring& jsonPath, bool forceRebuild = false);
 static void removeMenus();
 static FuncItem g_funcItems[] = {
+    { L"Open Scripts Folder", openScriptsFolder, 0, false, nullptr },
+    { L"Open menu.json", openMenuJson, 0, false, nullptr },
+    { L"Rebuild Menu", rebuildMenu, 0, false, nullptr },
     { L"Set menu.json Path...", setMenuJsonPath, 0, false, nullptr },
-    { L"About NppNodeJS", showAbout, 0, false, nullptr }
+    { L"", nullptr, 0, false, nullptr },
+    { L"About NppNodeJS (v1.0.0)", showAbout, 0, false, nullptr }
 };
 
 static HMENU g_mainMenu = nullptr;
@@ -379,6 +387,77 @@ static void setMenuJsonPath()
         MessageBoxW(g_nppData._nppHandle,
                     L"The menu configuration was changed, but NppNodeJS could not save the new path.\r\n\r\nThe new path will remain active until Notepad++ is restarted.",
                     L"NppNodeJS - Set menu.json Path", MB_OK | MB_ICONWARNING);
+    }
+}
+
+static void openScriptsFolder()
+{
+    if (g_processRunning.load()) {
+        MessageBoxW(g_nppData._nppHandle,
+                    L"Please wait until the current Node.js script has finished.",
+                    L"NppNodeJS - Open Scripts Folder", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const std::wstring folder = g_scriptFolder.empty()
+        ? resolveScriptFolder(loadConfiguredMenuPath(), L"./script")
+        : g_scriptFolder;
+    if (folder.empty()) return;
+
+    const DWORD attrs = GetFileAttributesW(folder.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        const int answer = MessageBoxW(
+            g_nppData._nppHandle,
+            L"The scripts folder does not exist. Create it?",
+            L"NppNodeJS - Open Scripts Folder",
+            MB_YESNO | MB_ICONQUESTION);
+        if (answer != IDYES) return;
+        const int result = SHCreateDirectoryExW(g_nppData._nppHandle, folder.c_str(), nullptr);
+        if (result != ERROR_SUCCESS && result != ERROR_FILE_EXISTS && result != ERROR_ALREADY_EXISTS) {
+            MessageBoxW(g_nppData._nppHandle,
+                        L"Unable to create the scripts folder.",
+                        L"NppNodeJS - Open Scripts Folder", MB_OK | MB_ICONERROR);
+            return;
+        }
+    }
+
+    const HINSTANCE result = ShellExecuteW(
+        g_nppData._nppHandle, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        MessageBoxW(g_nppData._nppHandle,
+                    L"Unable to open the scripts folder.",
+                    L"NppNodeJS - Open Scripts Folder", MB_OK | MB_ICONWARNING);
+    }
+}
+
+static void openMenuJson()
+{
+    const std::wstring path = g_menuJsonPath.empty() ? loadConfiguredMenuPath() : g_menuJsonPath;
+    if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        MessageBoxW(g_nppData._nppHandle,
+                    L"The current menu.json file does not exist.",
+                    L"NppNodeJS - Open menu.json", MB_OK | MB_ICONERROR);
+        return;
+    }
+    SendMessageW(g_nppData._nppHandle, NPPM_DOOPEN, 0,
+                 reinterpret_cast<LPARAM>(path.c_str()));
+}
+
+static void rebuildMenu()
+{
+    if (g_processRunning.load()) {
+        MessageBoxW(g_nppData._nppHandle,
+                    L"Please wait until the current Node.js script has finished before rebuilding the menu.",
+                    L"NppNodeJS - Rebuild Menu", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    const std::wstring path = g_menuJsonPath.empty() ? loadConfiguredMenuPath() : g_menuJsonPath;
+    if (path.empty()) return;
+
+    // installMenus() validates the new configuration before removing the current menu.
+    if (!installMenus(path, true)) {
+        installMenus(path, false);
     }
 }
 
@@ -1879,6 +1958,63 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
     });
 }
 
+static bool createScriptTemplate(const std::wstring& scriptPath)
+{
+    const std::wstring parent = directoryName(scriptPath);
+    if (!parent.empty() && parent != L".") {
+        const DWORD attrs = GetFileAttributesW(parent.c_str());
+        if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            const int result = SHCreateDirectoryExW(g_nppData._nppHandle, parent.c_str(), nullptr);
+            if (result != ERROR_SUCCESS && result != ERROR_FILE_EXISTS && result != ERROR_ALREADY_EXISTS) {
+                return false;
+            }
+        }
+    }
+
+    std::ofstream f(scriptPath.c_str(), std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+
+    const std::wstring lower = [&]() {
+        std::wstring value = scriptPath;
+        std::transform(value.begin(), value.end(), value.begin(), ::towlower);
+        return value;
+    }();
+    const bool isMjs = lower.size() >= 4 && lower.rfind(L".mjs") == lower.size() - 4;
+    const std::string text = isMjs
+        ? "// NppNodeJS API:\n// https://github.com/seantw/NppNodeJS\n\nimport npp from '#menu-helper';\n\nconsole.log('Hello, World!');\n"
+        : "// NppNodeJS API:\n// https://github.com/seantw/NppNodeJS\n\nconst npp = require('#menu-helper');\n\nconsole.log('Hello, World!');\n";
+    f.write(text.data(), static_cast<std::streamsize>(text.size()));
+    return f.good();
+}
+
+static bool openOrCreateScript(const std::wstring& scriptPath)
+{
+    const DWORD attrs = GetFileAttributesW(scriptPath.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        SendMessageW(g_nppData._nppHandle, NPPM_DOOPEN, 0,
+                     reinterpret_cast<LPARAM>(scriptPath.c_str()));
+        return true;
+    }
+
+    const std::wstring fileName = scriptPath.substr(scriptPath.find_last_of(L"\\/") + 1);
+    const std::wstring message = fileName + L" 不存在，是否建立？";
+    if (MessageBoxW(g_nppData._nppHandle, message.c_str(),
+                    L"NppNodeJS", MB_YESNO | MB_ICONQUESTION) != IDYES) {
+        return false;
+    }
+
+    if (!createScriptTemplate(scriptPath)) {
+        MessageBoxW(g_nppData._nppHandle,
+                    L"Unable to create the script file.",
+                    L"NppNodeJS", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    SendMessageW(g_nppData._nppHandle, NPPM_DOOPEN, 0,
+                 reinterpret_cast<LPARAM>(scriptPath.c_str()));
+    return true;
+}
+
 static void showScriptPath(int id)
 {
     const int index = id - g_cmdBase;
@@ -1889,8 +2025,13 @@ static void showScriptPath(int id)
     // Hidden shortcut: Ctrl+click a script menu item opens the script in Notepad++
     // instead of executing it.
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-        SendMessageW(g_nppData._nppHandle, NPPM_DOOPEN, 0,
-                     reinterpret_cast<LPARAM>(scriptPath.c_str()));
+        openOrCreateScript(scriptPath);
+        return;
+    }
+
+    const DWORD attrs = GetFileAttributesW(scriptPath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (!openOrCreateScript(scriptPath)) return;
         return;
     }
 
@@ -2027,9 +2168,9 @@ static void removeMenus()
     destroyHotkeyWindow();
 }
 
-static bool installMenus(const std::wstring& jsonPath)
+static bool installMenus(const std::wstring& jsonPath, bool forceRebuild)
 {
-    if (g_installed) return true;
+    if (g_installed && !forceRebuild) return true;
     const std::wstring jsonText = readUtf8File(jsonPath);
     if (jsonText.empty()) {
         MessageBoxW(g_nppData._nppHandle, jsonPath.c_str(), L"NppNodeJS - menu.json not found or empty", MB_OK | MB_ICONERROR);
@@ -2055,6 +2196,8 @@ static bool installMenus(const std::wstring& jsonPath)
         MessageBoxW(g_nppData._nppHandle, L"menu.json must contain string 'script_folder', string 'output_pan_title', and object 'menu'.", L"NppNodeJS", MB_OK | MB_ICONERROR);
         return false;
     }
+    // Validate the new configuration completely before removing the current menu.
+    // This keeps the existing menu available when Rebuild Menu encounters invalid JSON.
     int itemCount = 0;
     std::vector<cJSON*> stack{menuItem};
     while (!stack.empty()) {
@@ -2063,6 +2206,9 @@ static bool installMenus(const std::wstring& jsonPath)
             if (cJSON_IsString(x)) ++itemCount;
             else if (cJSON_IsObject(x)) stack.push_back(x);
         }
+    }
+    if (forceRebuild && g_installed) {
+        removeMenus();
     }
     if (itemCount > 0) {
         if (!SendMessageW(g_nppData._nppHandle, NPPM_ALLOCATECMDID, static_cast<WPARAM>(itemCount), reinterpret_cast<LPARAM>(&g_cmdBase))) {

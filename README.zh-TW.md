@@ -18,6 +18,9 @@ NppNodeJS 是讓 Notepad++ 直接執行 Node.js 腳本的 x64 Plugin，讓您自
 - 支援 CommonJS 與 ES Module。
 - **Ctrl + 左鍵**點選腳本選單項目，可在 Notepad++ 開啟腳本而不執行。
 - Notepad++ 關閉時會清理正在執行的 Node.js 程序。
+- **Open Scripts Folder** 開啟 `script_folder` 指定的腳本目錄。
+- **Open menu.json** 在 Notepad++ 開啟目前使用中的設定檔。
+- **Rebuild Menu** 重新讀取 `menu.json` 並重建 NppNodeJS 腳本選單，不需要重新啟動 Notepad++。
 - **Set menu.json Path...** 可讓您選擇 `menu.json` 的位置，不需要直接修改 `Program Files` 下的檔案。
 - **About NppNodeJS** 會直接開啟 [NppNodeJS GitHub repository](https://github.com/seantw/NppNodeJS)。
 
@@ -87,6 +90,33 @@ Notepad++\
 第一次執行 NppNodeJS 時，如果尚未設定自訂路徑，就會使用與 `NppNodeJS.dll` 位於同一目錄的 `menu.json`。
 
 如果將 `menu.json` 移到其他位置，而腳本使用 `#menu-helper` 或 `#npp-helper` Package Import Alias，請將 `menu-helper.js` 與 `package.json` 一起放在同一個專案目錄，以保留原本的 Node.js Package Import 設定。
+
+### NppNodeJS 選單功能
+
+**Plugins > NppNodeJS** 提供以下設定功能：
+
+- **Open Scripts Folder**：開啟 `script_folder` 解析後的腳本目錄。如果目錄不存在，會詢問是否建立。
+- **Open menu.json**：在 Notepad++ 開啟目前使用中的 `menu.json`。
+- **Rebuild Menu**：重新讀取目前的 `menu.json` 並重建腳本選單。新的設定正確時會立即生效；如果設定有錯誤，會保留原本的選單。
+- **Set menu.json Path...**：選擇其他 `menu.json`，並將路徑儲存到使用者自己的 Notepad++ Plugin 設定。
+
+### 腳本檔案不存在時
+
+如果選單項目指定的 `.js` 或 `.mjs` 腳本不存在，點選該項目時會詢問是否建立。確認後，NppNodeJS 會建立腳本檔案並在 Notepad++ 開啟，不會立即執行。
+
+產生的範本會依副檔名使用對應的模組格式。CommonJS `.js` 會使用：
+
+```js
+const npp = require('#menu-helper');
+```
+
+ES Module `.mjs` 會使用：
+
+```js
+import npp from '#menu-helper';
+```
+
+建立後需要再次選擇該選單項目才會執行腳本。
 
 ### `script_folder`
 
@@ -194,14 +224,11 @@ D:\Work\npp-nodejs\script\
 
 - 熱鍵與選單名稱之間必須是 **Tab 字元 `\t`**。
 - 熱鍵會透過 Windows `RegisterHotKey` 註冊，因此如果該組合已被 Windows 或其他程式使用，可能無法註冊。
-- 不建議讓多個腳本使用相同熱鍵。
-- **Ctrl + 左鍵**是 NppNodeJS 內建功能，不需要在 `menu.json` 中設定。
 
 ## 執行腳本
 
-- **左鍵點選：** 執行腳本。
-- **設定的鍵盤快捷鍵：** 執行對應腳本。
-- **Ctrl + 左鍵點選：** 在 Notepad++ 開啟腳本，但不執行。
+- 在產出的選單中點擊欲執行的腳本即可執行。(感覺有點廢話)
+- 欲直接開啟腳本進行編輯，可在選單中按 Ctrl + 點擊。
 
 每次執行腳本時，Output Pane 會先清除前一次輸出並重複使用。Plugin 啟動時不會因為 Output Pane 存在而自動建立或顯示它。
 
