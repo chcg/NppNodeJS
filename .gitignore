@@ -1,5 +1,6 @@
 # Build output
 build/
+release/
 
 # Node.js dependencies
 node_modules/

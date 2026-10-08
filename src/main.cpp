@@ -32,6 +32,10 @@ extern "C" {
 }
 
 static const wchar_t PLUGIN_NAME[] = L"NppNodeJS";
+// Keep this synchronized with menu-helper.js. Change it only when helper API
+// compatibility changes, not for routine implementation fixes.
+static constexpr unsigned int HELPER_API_ID = 1;
+static constexpr char HELPER_API_CHECK_PREFIX[] = "\x1eNPPNODE_HELPER_API:";
 static NppData g_nppData{};
 static HMODULE g_hModule = nullptr;
 
@@ -48,7 +52,7 @@ static FuncItem g_funcItems[] = {
     { L"Rebuild Menu", rebuildMenu, 0, false, nullptr },
     { L"Set menu.json Path...", setMenuJsonPath, 0, false, nullptr },
     { L"", nullptr, 0, false, nullptr },
-    { L"About NppNodeJS (v1.0.0)", showAbout, 0, false, nullptr }
+    { L"About NppNodeJS (v1.0.1)", showAbout, 0, false, nullptr }
 };
 
 static HMENU g_mainMenu = nullptr;
@@ -87,6 +91,8 @@ static HANDLE g_stdinWrite = nullptr;
 static std::mutex g_stdinMutex;
 static std::atomic<bool> g_processRunning{false};
 static std::atomic<bool> g_shuttingDown{false};
+static std::atomic<bool> g_helperApiVerified{false};
+static std::atomic<bool> g_helperApiMismatchReported{false};
 static std::mutex g_processHandleMutex;
 static HANDLE g_processHandle = nullptr;
 static constexpr UINT WM_NPPNODE_OUTPUT = WM_APP + 101;
@@ -278,9 +284,9 @@ static bool saveConfiguredMenuPath(const std::wstring& path)
 
 static std::wstring trim(const std::wstring& s)
 {
-    const size_t first = s.find_first_not_of(L" \\t");
+    const size_t first = s.find_first_not_of(L" \t");
     if (first == std::wstring::npos) return L"";
-    const size_t last = s.find_last_not_of(L" \\t");
+    const size_t last = s.find_last_not_of(L" \t");
     return s.substr(first, last - first + 1);
 }
 
@@ -309,14 +315,36 @@ static bool parseHotkey(const std::wstring& title, UINT& modifiers, UINT& key)
         if (plus == std::wstring::npos) break;
         start = plus + 1;
     }
-    return key != 0;
+    // RegisterHotKey with no modifiers captures the key globally. Require an
+    // explicit modifier so a plain Tab (or any other bare key) stays usable.
+    return key != 0 && modifiers != 0;
 }
 
 static void registerHotkeyForItem(const std::wstring& title, int id)
 {
     UINT modifiers = 0, key = 0;
-    if (!parseHotkey(title, modifiers, key) || !g_hotkeyWnd) return;
-    RegisterHotKey(g_hotkeyWnd, id, modifiers, key);
+    if (!parseHotkey(title, modifiers, key)) {
+        if (title.find(L'\t') != std::wstring::npos)
+            debugLog(L"Hotkey parse failed title='" + title + L"'");
+        return;
+    }
+    if (!g_hotkeyWnd) {
+        debugLog(L"Hotkey registration skipped (window unavailable) title='" + title + L"'");
+        return;
+    }
+    SetLastError(ERROR_SUCCESS);
+    if (!RegisterHotKey(g_hotkeyWnd, id, modifiers, key)) {
+        const DWORD error = GetLastError();
+        const std::wstring message = L"RegisterHotKey failed for '" + title +
+            L"' (id=" + std::to_wstring(id) + L", modifiers=" + std::to_wstring(modifiers) +
+            L", key=" + std::to_wstring(key) + L", error=" + std::to_wstring(error) + L")";
+        OutputDebugStringW(message.c_str());
+        debugLog(message);
+    } else {
+        debugLog(L"RegisterHotKey succeeded for '" + title + L"' (id=" +
+                 std::to_wstring(id) + L", modifiers=" + std::to_wstring(modifiers) +
+                 L", key=" + std::to_wstring(key) + L")");
+    }
 }
 
 static void unregisterHotkeys()
@@ -713,12 +741,14 @@ static void applyOutputStyle()
     constexpr UINT SCI_SETMARGINRIGHT = 2157;
     constexpr UINT SCI_GETELEMENTCOLOUR = 2754;
     constexpr UINT SCI_SETELEMENTCOLOUR = 2753;
+    constexpr UINT SCI_RESETELEMENTCOLOUR = 2755;
+    constexpr UINT SCI_GETELEMENTISSET = 2756;
     constexpr UINT SCI_GETSELECTIONLAYER = 2762;
     constexpr UINT SCI_SETSELECTIONLAYER = 2763;
-    constexpr UINT SCI_GETSELALPHA = 2477;
-    constexpr UINT SCI_SETSELALPHA = 2478;
     constexpr int SC_ELEMENT_SELECTION_TEXT = 10;
     constexpr int SC_ELEMENT_SELECTION_BACK = 11;
+    constexpr int SC_ELEMENT_SELECTION_INACTIVE_TEXT = 16;
+    constexpr int SC_ELEMENT_SELECTION_INACTIVE_BACK = 17;
     constexpr UINT SCI_SETCARETFORE = 2069;
 
     // Read the active document's default style.  A freshly created Scintilla
@@ -758,19 +788,27 @@ static void applyOutputStyle()
     if (fontName[0])
         SendMessageA(g_outputEdit, SCI_STYLESETFONT, STYLE_DEFAULT, reinterpret_cast<LPARAM>(fontName));
 
-    // Match the active editor's selection appearance.
-    const LRESULT selectionFore = SendMessageW(sci, SCI_GETELEMENTCOLOUR, SC_ELEMENT_SELECTION_TEXT, 0);
-    const LRESULT selectionBack = SendMessageW(sci, SCI_GETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, 0);
-    if (selectionFore >= 0)
-        SendMessageW(g_outputEdit, SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_TEXT, selectionFore);
-    if (selectionBack >= 0)
-        SendMessageW(g_outputEdit, SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, selectionBack);
-    const LRESULT selectionAlpha = SendMessageW(sci, SCI_GETSELALPHA, 0, 0);
-    if (selectionAlpha >= 0)
-        SendMessageW(g_outputEdit, SCI_SETSELALPHA, selectionAlpha, 0);
+    // Copy both active and inactive selection elements while preserving whether
+    // the source explicitly sets a colour or relies on Scintilla's defaults.
+    // Setting an unset element as colour 0 makes it fully transparent.
+    auto copySelectionElement = [&](int element, const wchar_t* name) {
+        const bool isSet = SendMessageW(sci, SCI_GETELEMENTISSET, element, 0) != 0;
+        const LRESULT colour = SendMessageW(sci, SCI_GETELEMENTCOLOUR, element, 0);
+        if (isSet)
+            SendMessageW(g_outputEdit, SCI_SETELEMENTCOLOUR, element, colour);
+        else
+            SendMessageW(g_outputEdit, SCI_RESETELEMENTCOLOUR, element, 0);
+        debugLog(L"applyOutputStyle selection element=" + std::wstring(name) +
+                 L" isSet=" + std::to_wstring(isSet) + L" colour=" + std::to_wstring(colour));
+    };
+    copySelectionElement(SC_ELEMENT_SELECTION_TEXT, L"active text");
+    copySelectionElement(SC_ELEMENT_SELECTION_BACK, L"active back");
+    copySelectionElement(SC_ELEMENT_SELECTION_INACTIVE_TEXT, L"inactive text");
+    copySelectionElement(SC_ELEMENT_SELECTION_INACTIVE_BACK, L"inactive back");
     const LRESULT selectionLayer = SendMessageW(sci, SCI_GETSELECTIONLAYER, 0, 0);
     if (selectionLayer >= 0)
         SendMessageW(g_outputEdit, SCI_SETSELECTIONLAYER, selectionLayer, 0);
+    debugLog(L"applyOutputStyle selection layer=" + std::to_wstring(selectionLayer));
 
     // Match the active editor's blank margins around the text.
     const LRESULT marginLeft = SendMessageW(sci, SCI_GETMARGINLEFT, 0, 0);
@@ -1361,19 +1399,25 @@ static bool handleConfirmProtocolLine(const std::string& line)
 
     const std::wstring message = utf8ToWide(decodedMessage.c_str());
     const std::wstring title = utf8ToWide(decodedTitle.c_str());
-    const bool accepted = showConfirmDialog(message, title);
-
-    std::lock_guard<std::mutex> lock(g_stdinMutex);
-    if (g_stdinWrite) {
-        const char* response = accepted ? "OK\n" : "CANCEL\n";
-        DWORD written = 0;
-        const BOOL ok = WriteFile(g_stdinWrite, response,
-                                  static_cast<DWORD>(std::strlen(response)),
-                                  &written, nullptr);
-        FlushFileBuffers(g_stdinWrite);
-        debugLog(L"protocol confirm response sent accepted=" + std::to_wstring(accepted) +
-                 L" WriteFile=" + std::to_wstring(ok) +
-                 L" bytes=" + std::to_wstring(written));
+    auto showAndRespond = [message, title]() {
+        const bool accepted = showConfirmDialog(message, title);
+        std::lock_guard<std::mutex> lock(g_stdinMutex);
+        if (g_stdinWrite) {
+            const char* response = accepted ? "OK\n" : "CANCEL\n";
+            DWORD written = 0;
+            const BOOL ok = WriteFile(g_stdinWrite, response,
+                                      static_cast<DWORD>(std::strlen(response)),
+                                      &written, nullptr);
+            FlushFileBuffers(g_stdinWrite);
+            debugLog(L"protocol confirm response sent accepted=" + std::to_wstring(accepted) +
+                     L" WriteFile=" + std::to_wstring(ok) +
+                     L" bytes=" + std::to_wstring(written));
+        }
+    };
+    try {
+        std::thread(showAndRespond).detach();
+    } catch (...) {
+        showAndRespond();
     }
     return true;
 }
@@ -1398,23 +1442,30 @@ static bool handlePromptProtocolLine(const std::string& line)
     const std::wstring message = utf8ToWide(decodedMessage.c_str());
     const std::wstring defaultValue = utf8ToWide(decodedDefault.c_str());
     const std::wstring title = utf8ToWide(decodedTitle.c_str());
-    std::wstring value;
-    const bool accepted = showPromptDialog(message, defaultValue, title, value);
-
-    std::lock_guard<std::mutex> lock(g_stdinMutex);
-    if (g_stdinWrite) {
-        std::string response;
-        if (accepted) {
-            response = "OK:" + encodeBase64(debugWideToUtf8(value)) + "\n";
-        } else {
-            response = "CANCEL\n";
+    auto showAndRespond = [message, defaultValue, title]() {
+        std::wstring value;
+        const bool accepted = showPromptDialog(message, defaultValue, title, value);
+        std::lock_guard<std::mutex> lock(g_stdinMutex);
+        if (g_stdinWrite) {
+            std::string response;
+            if (accepted) {
+                response = "OK:" + encodeBase64(debugWideToUtf8(value)) + "\n";
+            } else {
+                response = "CANCEL\n";
+            }
+            DWORD written = 0;
+            const BOOL ok = WriteFile(g_stdinWrite, response.data(),
+                                      static_cast<DWORD>(response.size()), &written, nullptr);
+            FlushFileBuffers(g_stdinWrite);
+            debugLog(L"protocol prompt response sent accepted=" + std::to_wstring(accepted) +
+                     L" WriteFile=" + std::to_wstring(ok) +
+                     L" bytes=" + std::to_wstring(written));
         }
-        DWORD written = 0;
-        const BOOL ok = WriteFile(g_stdinWrite, response.data(), static_cast<DWORD>(response.size()), &written, nullptr);
-        FlushFileBuffers(g_stdinWrite);
-        debugLog(L"protocol prompt response sent accepted=" + std::to_wstring(accepted) +
-                 L" WriteFile=" + std::to_wstring(ok) +
-                 L" bytes=" + std::to_wstring(written));
+    };
+    try {
+        std::thread(showAndRespond).detach();
+    } catch (...) {
+        showAndRespond();
     }
     return true;
 }
@@ -1641,21 +1692,30 @@ static bool handleProtocolLine(const std::string& line)
     const std::wstring message = utf8ToWide(decodedMessage.c_str());
     const std::wstring title = utf8ToWide(decodedTitle.c_str());
     debugLog(L"protocol alert received message=" + message + L" title=" + title);
-    const int result = MessageBoxW(g_nppData._nppHandle, message.c_str(),
-                                   title.c_str(), MB_OK | MB_ICONINFORMATION);
-
-    std::lock_guard<std::mutex> lock(g_stdinMutex);
-    if (g_stdinWrite) {
-        const char response[] = "OK\n";
-        DWORD written = 0;
-        const BOOL ok = WriteFile(g_stdinWrite, response, static_cast<DWORD>(sizeof(response) - 1), &written, nullptr);
-        FlushFileBuffers(g_stdinWrite);
-
-        // Keep stdin open so the same Node.js process can issue another alert.
-        // The stdin pipe is closed only after the Node.js process has exited.
-        debugLog(L"protocol alert response sent result=" + std::to_wstring(result) +
-                 L" WriteFile=" + std::to_wstring(ok) +
-                 L" bytes=" + std::to_wstring(written) + L" stdin kept open");
+    // Keep the Notepad++ UI thread free while the dialog is open. This lets
+    // queued Output Pane updates continue to render during an async alert.
+    auto showAndRespond = [message, title]() {
+        const int result = MessageBoxW(g_nppData._nppHandle, message.c_str(),
+                                       title.c_str(), MB_OK | MB_ICONINFORMATION);
+        std::lock_guard<std::mutex> lock(g_stdinMutex);
+        if (g_stdinWrite) {
+            const char response[] = "OK\n";
+            DWORD written = 0;
+            const BOOL ok = WriteFile(g_stdinWrite, response,
+                                      static_cast<DWORD>(sizeof(response) - 1), &written, nullptr);
+            FlushFileBuffers(g_stdinWrite);
+            // Keep stdin open so the same Node.js process can issue another alert.
+            // The stdin pipe is closed only after the Node.js process has exited.
+            debugLog(L"protocol alert response sent result=" + std::to_wstring(result) +
+                     L" WriteFile=" + std::to_wstring(ok) +
+                     L" bytes=" + std::to_wstring(written) + L" stdin kept open");
+        }
+    };
+    try {
+        std::thread(showAndRespond).detach();
+    } catch (...) {
+        // Preserve the alert behavior if the worker thread cannot be created.
+        showAndRespond();
     }
     return true;
 }
@@ -1680,6 +1740,57 @@ static bool dispatchProtocolLineToUi(const std::string& line)
     return request->handled;
 }
 
+static void reportHelperApiMismatch()
+{
+    if (g_helperApiMismatchReported.exchange(true)) return;
+
+    MessageBoxW(g_nppData._nppHandle,
+                L"menu-helper.js is incompatible with the currently loaded NppNodeJS.dll.\r\n\r\n"
+                L"Copy the matching menu-helper.js from Notepad++\\plugins\\NppNodeJS "
+                L"to the parent directory of script_folder, then run the script again.",
+                L"NppNodeJS - Incompatible Helper API", MB_OK | MB_ICONERROR);
+
+    std::lock_guard<std::mutex> lock(g_processHandleMutex);
+    if (g_processHandle) TerminateProcess(g_processHandle, ERROR_REVISION_MISMATCH);
+}
+
+static bool handleHelperApiCheckLine(const std::string& line)
+{
+    const std::string prefix(HELPER_API_CHECK_PREFIX);
+    if (line.rfind(prefix, 0) != 0) return false;
+
+    const std::string helperId = line.substr(prefix.size());
+    if (helperId == std::to_string(HELPER_API_ID)) {
+        g_helperApiVerified.store(true);
+    } else {
+        reportHelperApiMismatch();
+    }
+    return true;
+}
+
+static bool postOutputMessage(const std::wstring& text)
+{
+    if (!g_hotkeyWnd) return false;
+    auto* payload = new std::wstring(text);
+    g_outputMessagesPending.fetch_add(1);
+    if (!PostMessageW(g_hotkeyWnd, WM_NPPNODE_OUTPUT, 0, reinterpret_cast<LPARAM>(payload))) {
+        g_outputMessagesPending.fetch_sub(1);
+        delete payload;
+        return false;
+    }
+    return true;
+}
+
+static void finishFailedLaunch(const std::wstring& message)
+{
+    const bool outputPosted = postOutputMessage(message);
+    g_processRunning.store(false);
+    const BOOL runStatePosted = g_hotkeyWnd
+        ? PostMessageW(g_hotkeyWnd, WM_NPPNODE_RUNSTATE, 0, 0) : FALSE;
+    debugLog(L"finishFailedLaunch outputPosted=" + std::to_wstring(outputPosted) +
+             L" runStatePosted=" + std::to_wstring(runStatePosted));
+}
+
 static void readPipe(HANDLE pipe, const std::shared_ptr<std::atomic<bool>>& hadOutput)
 {
     debugLog(L"readPipe start pipe=" + hexPtr(pipe));
@@ -1691,10 +1802,7 @@ static void readPipe(HANDLE pipe, const std::shared_ptr<std::atomic<bool>>& hadO
     auto emitNormal = [&](const std::wstring& text) {
         if (text.empty()) return;
         hadOutput->store(true);
-        g_outputMessagesPending.fetch_add(1);
-        const BOOL posted = g_hotkeyWnd ? PostMessageW(g_hotkeyWnd, WM_NPPNODE_OUTPUT,
-                                        0, reinterpret_cast<LPARAM>(new std::wstring(text))) : FALSE;
-        if (!posted) g_outputMessagesPending.fetch_sub(1);
+        const bool posted = postOutputMessage(text);
         debugLog(L"readPipe emit wchar=" + std::to_wstring(text.size()) + L" PostMessage=" + std::to_wstring(posted));
     };
 
@@ -1863,6 +1971,8 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
         applyOutputStyle();
     }
     g_processRunning.store(true);
+    g_helperApiVerified.store(false);
+    g_helperApiMismatchReported.store(false);
 
     if (g_processThread.joinable()) g_processThread.join();
     g_processThread = std::thread([path, menuTitle]() {
@@ -1880,9 +1990,7 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
             if (inRead) CloseHandle(inRead); if (inWrite) CloseHandle(inWrite);
             if (outRead) CloseHandle(outRead); if (outWrite) CloseHandle(outWrite);
             if (errRead) CloseHandle(errRead); if (errWrite) CloseHandle(errWrite);
-            if (g_hotkeyWnd) PostMessageW(g_hotkeyWnd, WM_NPPNODE_OUTPUT, 0,
-                reinterpret_cast<LPARAM>(new std::wstring(L"[NppNodeJS] Unable to create stdout/stderr pipes.\r\n")));
-            g_processRunning.store(false);
+            finishFailedLaunch(L"[NppNodeJS] Unable to create stdout/stderr pipes.\r\n");
             return;
         }
         SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0);
@@ -1892,7 +2000,8 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
         const std::string menuTitleUtf8 = debugWideToUtf8(menuTitle);
         const std::string menuTitleBase64 = encodeBase64(menuTitleUtf8);
         std::wstring command = L"node.exe " + quoteCommandArg(path) +
-            L" --nppnode-menu-title-b64 " + quoteCommandArg(utf8ToWide(menuTitleBase64.c_str()));
+            L" --nppnode-menu-title-b64 " + quoteCommandArg(utf8ToWide(menuTitleBase64.c_str())) +
+            L" --nppnode-helper-api-id " + quoteCommandArg(std::to_wstring(HELPER_API_ID));
         std::vector<wchar_t> environment = makeEnvironmentBlock(menuTitle);
         STARTUPINFOW si{};
         si.cb = sizeof(si);
@@ -1915,11 +2024,9 @@ static void runNodeScript(const std::wstring& path, const std::wstring& menuTitl
             const DWORD err = GetLastError();
             debugLog(L"CreateProcess FAILED error=" + std::to_wstring(err));
             std::wstring msg = L"[NppNodeJS] Unable to start node.exe. Error code: " + std::to_wstring(err) + L"\r\n";
-            if (g_hotkeyWnd) PostMessageW(g_hotkeyWnd, WM_NPPNODE_OUTPUT, 0,
-                reinterpret_cast<LPARAM>(new std::wstring(std::move(msg))));
             CloseHandle(inWrite);
             CloseHandle(outRead); CloseHandle(errRead);
-            g_processRunning.store(false);
+            finishFailedLaunch(msg);
             return;
         }
 
@@ -1997,7 +2104,7 @@ static bool openOrCreateScript(const std::wstring& scriptPath)
     }
 
     const std::wstring fileName = scriptPath.substr(scriptPath.find_last_of(L"\\/") + 1);
-    const std::wstring message = fileName + L" 不存在，是否建立？";
+    const std::wstring message = fileName + L" does not exist. Create it?";
     if (MessageBoxW(g_nppData._nppHandle, message.c_str(),
                     L"NppNodeJS", MB_YESNO | MB_ICONQUESTION) != IDYES) {
         return false;
@@ -2015,7 +2122,7 @@ static bool openOrCreateScript(const std::wstring& scriptPath)
     return true;
 }
 
-static void showScriptPath(int id)
+static void showScriptPath(int id, bool checkCtrlClick = true)
 {
     const int index = id - g_cmdBase;
     if (index < 0 || index >= static_cast<int>(g_scriptPaths.size())) return;
@@ -2024,7 +2131,7 @@ static void showScriptPath(int id)
 
     // Hidden shortcut: Ctrl+click a script menu item opens the script in Notepad++
     // instead of executing it.
-    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+    if (checkCtrlClick && (GetKeyState(VK_CONTROL) & 0x8000) != 0) {
         openOrCreateScript(scriptPath);
         return;
     }
@@ -2042,8 +2149,13 @@ static LRESULT CALLBACK hotkeyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 {
     if (msg == WM_HOTKEY) {
         const int id = static_cast<int>(wParam);
+        debugLog(L"WM_HOTKEY received id=" + std::to_wstring(id) +
+                 L" modifiers=" + std::to_wstring(LOWORD(lParam)) +
+                 L" key=" + std::to_wstring(HIWORD(lParam)));
         if (id >= g_cmdBase && id < g_cmdBase + g_cmdCount) {
-            showScriptPath(id);
+            // WM_HOTKEY is dispatched while its modifier is still down; do
+            // not mistake Ctrl+E for the menu's Ctrl+click editing gesture.
+            showScriptPath(id, false);
             return 0;
         }
     } else if (msg == WM_NPPNODE_PROTOCOL) {
@@ -2051,7 +2163,13 @@ static LRESULT CALLBACK hotkeyWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (holder) {
             std::shared_ptr<ProtocolDispatchRequest> request = *holder;
             delete holder;
-            bool handled = handleProtocolLine(request->line);
+            bool handled = handleHelperApiCheckLine(request->line);
+            if (!handled && !g_helperApiVerified.load() &&
+                request->line.rfind("\x1eNPPNODE_", 0) == 0) {
+                reportHelperApiMismatch();
+                handled = true;
+            }
+            if (!handled) handled = handleProtocolLine(request->line);
             if (!handled) handled = handlePromptProtocolLine(request->line);
             if (!handled) handled = handleConfirmProtocolLine(request->line);
             if (!handled) handled = handleGetFileProtocolLine(request->line);
@@ -2146,6 +2264,36 @@ static bool addJsonMenu(HMENU menu, cJSON* obj, const std::wstring& folder)
     return true;
 }
 
+static int findHelpMenuPosition(HMENU menu)
+{
+    if (!menu) return -1;
+
+    const int count = GetMenuItemCount(menu);
+    for (int i = 0; i < count; ++i) {
+        wchar_t labelBuffer[256] = {};
+        GetMenuStringW(menu, static_cast<UINT>(i), labelBuffer,
+                       static_cast<int>(std::size(labelBuffer)), MF_BYPOSITION);
+        std::wstring label = labelBuffer;
+        label.erase(std::remove(label.begin(), label.end(), L'&'), label.end());
+        const size_t first = label.find_first_not_of(L" \t");
+        const size_t last = label.find_last_not_of(L" \t");
+        label = first == std::wstring::npos ? L"" : label.substr(first, last - first + 1);
+        std::wstring normalized = label;
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::towlower);
+
+        debugLog(L"Main menu item[" + std::to_wstring(i) + L"]='" + label + L"'");
+        if (normalized == L"?" || normalized == L"help" || normalized == L"說明" ||
+            normalized == L"帮助" || normalized == L"ヘルプ" || normalized == L"aide" ||
+            normalized == L"hilfe") {
+            debugLog(L"Help menu insertion position=" + std::to_wstring(i));
+            return i;
+        }
+    }
+
+    debugLog(L"Help menu was not found; script menus will be appended");
+    return -1;
+}
+
 static void removeMenus()
 {
     unregisterHotkeys();
@@ -2234,6 +2382,7 @@ static bool installMenus(const std::wstring& jsonPath, bool forceRebuild)
     debugLog(L"menu.json=" + jsonPath);
     debugLog(L"script_folder=" + g_scriptFolder);
     debugLog(L"output_pan_title=" + g_outputTitle);
+    int helpMenuPosition = findHelpMenuPosition(g_mainMenu);
     for (cJSON* top = menuItem->child; top; top = top->next) {
         if (!top->string || !cJSON_IsObject(top)) continue;
         HMENU sub = CreatePopupMenu();
@@ -2241,8 +2390,21 @@ static bool installMenus(const std::wstring& jsonPath, bool forceRebuild)
             if (sub) DestroyMenu(sub); cJSON_Delete(root); removeMenus(); return false;
         }
         const std::wstring title = utf8ToWide(top->string);
-        if (!AppendMenuW(g_mainMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), title.c_str())) {
-            DestroyMenu(sub); cJSON_Delete(root); removeMenus(); return false;
+        const BOOL inserted = helpMenuPosition >= 0
+            ? InsertMenuW(g_mainMenu, static_cast<UINT>(helpMenuPosition),
+                          MF_BYPOSITION | MF_POPUP, reinterpret_cast<UINT_PTR>(sub), title.c_str())
+            : AppendMenuW(g_mainMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), title.c_str());
+        if (!inserted) {
+            const DWORD insertError = GetLastError();
+            debugLog(L"Script menu insertion failed title='" + title + L"' error=" + std::to_wstring(insertError));
+            if (helpMenuPosition >= 0 && AppendMenuW(g_mainMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), title.c_str())) {
+                debugLog(L"Script menu appended as fallback title='" + title + L"'");
+            } else {
+                DestroyMenu(sub); cJSON_Delete(root); removeMenus(); return false;
+            }
+        } else if (helpMenuPosition >= 0) {
+            debugLog(L"Script menu inserted before Help title='" + title + L"' position=" + std::to_wstring(helpMenuPosition));
+            ++helpMenuPosition;
         }
         g_topMenus.push_back(sub);
     }

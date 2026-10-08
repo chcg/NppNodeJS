@@ -1,35 +1,21 @@
 # NppNodeJS
 
-NppNodeJS is a Notepad++ x64 plugin for running Node.js scripts directly from Notepad++ and allowing your JavaScript code to interact with the document currently being edited.
-
-Write your own `.js` or `.mjs` scripts, add them to `menu.json`, and run them from a Notepad++ menu. The bundled helper module provides a simple asynchronous API for dialogs, the current file, cursor position, lines, selections, and the entire document.
+NppNodeJS is an x64 Notepad++ plugin. It lets you customize script menus and run Node.js scripts from those menus.
 
 ## Features
 
-- Run `.js` and `.mjs` Node.js scripts from configurable Notepad++ menus.
-- Configure keyboard shortcuts directly in `menu.json`.
-- Persistent dockable Output Pane for `stdout` and `stderr`.
-- Live output while the script is running.
-- The Output Pane is created and shown only when actual output or an error is produced.
-- Output Pane styling follows the active Scintilla document.
-- UTF-8 output with ANSI escape-sequence filtering.
-- Native `alert()`, `prompt()`, and `confirm()` dialogs.
-- Read and modify the current file, cursor position, current line, selection, and complete document.
-- CommonJS and ES Module support.
-- **Ctrl+left-click** a script menu item to open the script in Notepad++ without executing it.
+- Displays `stdout` and `stderr` in the Output Pane in real time.
+- Lets JavaScript read and modify the full text, current line, and selected text in the active Notepad++ document, and retrieve its file path and cursor position.
+- Provides native `npp.alert()`, `npp.prompt()`, and `npp.confirm()` dialogs.
+- Includes a helper module that supports CommonJS and ES modules. The default API is synchronous, with a Promise-based asynchronous API also available.
+- Hold Ctrl and click a script menu item to open the script in Notepad++ for editing. If the file does not exist, you can choose to create a template.
 - Running Node.js processes are cleaned up when Notepad++ shuts down.
-- **Open Scripts Folder** opens the configured script directory in Windows Explorer.
-- **Open menu.json** opens the currently active configuration file in Notepad++.
-- **Rebuild Menu** rereads `menu.json` and rebuilds the NppNodeJS script menus without restarting Notepad++.
-- **Set menu.json Path...** lets you choose the `menu.json` file without modifying files under `Program Files`.
-- **About NppNodeJS** opens the [NppNodeJS GitHub repository](https://github.com/seantw/NppNodeJS).
 
 ## Requirements
 
 - Windows x64
 - Notepad++ x64
-- **Node.js must be installed on the computer**, and the `node` command must be available in `PATH`.
-  Download Node.js from the [official Node.js website](https://nodejs.org/).
+- Node.js, with the `node` command available on your `PATH`.
 
 ## Installation
 
@@ -38,7 +24,7 @@ Write your own `.js` or `.mjs` scripts, add them to `menu.json`, and run them fr
    `Notepad++\plugins\NppNodeJS\`
 3. Copy `NppNodeJS.dll` into that directory.
 4. Place `menu.json`, `menu-helper.js`, and `package.json` in the same directory as `NppNodeJS.dll` for the default setup.
-5. Put your Node.js scripts in the directory specified by `script_folder`.
+5. Put your `.js` or `.mjs` scripts in the directory specified by `script_folder`.
 6. Restart Notepad++.
 
 A typical layout is:
@@ -56,150 +42,19 @@ Notepad++\
 │        └─ my-script.js
 ```
 
-## File Encoding
+## Configure `menu.json`
 
-`menu.json` and all `.js` / `.mjs` scripts you create for NppNodeJS must be saved as **UTF-8**. Do not save these files as ANSI, Big5, or another legacy encoding, especially when they contain non-ASCII characters.
-
-## Configuration
-
-`menu.json` controls the script directory, Output Pane title, menu hierarchy, and optional keyboard shortcuts.
+`menu.json` configures the script directory, Output Pane title, menu hierarchy, and keyboard shortcuts. You can open it from **Plugins > NppNodeJS > Open menu.json** in the Notepad++ main menu. For example:
 
 ```json
 {
-  "script_folder": "D:/Work/npp-nodejs/script",
+  "script_folder": "./script",
   "output_pan_title": "Output Pane",
   "menu": {
     "Tools": {
       "Hello World\tCtrl+1": "hello-world.js",
       "Run Report\tCtrl+Shift+R": "report.js",
       "Open Utility\tAlt+F8": "utility.js"
-    }
-  }
-}
-```
-
-### `menu.json` location
-
-By default, NppNodeJS loads `menu.json` from the plugin directory:
-
-```text
-<Notepad++>\plugins\NppNodeJS\menu.json
-```
-
-You can change the `menu.json` location from **Plugins > NppNodeJS > Set menu.json Path...**. The selected path is stored in the user's Notepad++ plugin configuration area, so changing the path does not require administrator permission.
-
-The first time NppNodeJS runs, if no custom path has been configured, it uses the `menu.json` next to `NppNodeJS.dll`.
-
-When using a custom `menu.json` location, keep `menu-helper.js` and `package.json` in the same project directory when your scripts use the `#menu-helper` or `#npp-helper` package import aliases. This preserves the existing Node.js package import configuration.
-
-### NppNodeJS menu commands
-
-The **Plugins > NppNodeJS** menu provides these configuration commands:
-
-- **Open Scripts Folder** opens the directory resolved from `script_folder`. If the directory does not exist, NppNodeJS asks whether to create it.
-- **Open menu.json** opens the currently active `menu.json` in Notepad++.
-- **Rebuild Menu** rereads the current `menu.json` and rebuilds the script menus. A valid configuration takes effect immediately; if the new configuration is invalid, the existing menu is kept.
-- **Set menu.json Path...** selects a different `menu.json` and stores that path in the user's Notepad++ plugin configuration.
-
-### Missing script files
-
-If a menu item points to a `.js` or `.mjs` file that does not exist, selecting that item asks whether to create it. After confirmation, NppNodeJS creates the file and opens it in Notepad++ instead of executing it.
-
-The generated template matches the script type. A CommonJS `.js` file starts with:
-
-```js
-const npp = require('#menu-helper');
-```
-
-An ES Module `.mjs` file starts with:
-
-```js
-import npp from '#menu-helper';
-```
-
-The new file is not executed until you select the menu item again.
-
-### `script_folder`
-
-The directory containing your `.js` and `.mjs` scripts. It supports both absolute paths and paths relative to the directory containing `menu.json`. Forward slashes are recommended in JSON paths.
-
-Relative path example:
-
-```json
-"script_folder": "./script"
-```
-
-If `menu.json` is:
-
-```text
-D:\Work\npp-nodejs\menu.json
-```
-
-then `./script` resolves to:
-
-```text
-D:\Work\npp-nodejs\script\
-```
-
-Parent-directory paths are also supported, for example `../scripts`. Absolute paths continue to work as before:
-
-```json
-"script_folder": "D:/Work/npp-nodejs/script"
-```
-
-Relative paths are always resolved against the directory containing `menu.json`, not against Notepad++'s installation directory or the current working directory.
-
-### `output_pan_title`
-
-The title displayed by the dockable Output Pane when no script is running.
-
-### `menu`
-
-The menu object defines the menu hierarchy. A string value is a script filename relative to `script_folder`.
-
-Menu item titles may optionally contain a tab followed by a keyboard shortcut:
-
-```text
-Menu title\tHotkey
-```
-
-The tab and shortcut are parsed by NppNodeJS and the shortcut is registered as a Windows global hotkey for the current desktop session.
-
-## Keyboard shortcuts
-
-Keyboard shortcuts are configured directly in the **menu item title** in `menu.json`:
-
-```json
-"My Script\tCtrl+Shift+R": "my-script.js"
-```
-
-The supported modifier names are:
-
-| Modifier | Syntax |
-|---|---|
-| Control | `Ctrl` or `Control` |
-| Shift | `Shift` |
-| Alt | `Alt` |
-
-The supported key forms are:
-
-| Key | Syntax |
-|---|---|
-| Letter or digit | `A`–`Z`, `0`–`9` |
-| Function keys | `F1`–`F24` |
-| Tab | `Tab` |
-
-Examples:
-
-The `menu` hierarchy can contain up to **3 levels from the top level**. For example, this configuration has two top-level menus. The first contains three scripts. The second contains two scripts and one submenu, which contains two more scripts:
-
-```json
-{
-  "menu": {
-    "File Tools": {
-      "Open File": "open-file.js",
-      "Save File": "save-file.js",
-      "Backup File": "backup-file.js"
     },
     "Document Tools": {
       "Format Document": "format.js",
@@ -213,118 +68,105 @@ The `menu` hierarchy can contain up to **3 levels from the top level**. For exam
 }
 ```
 
-A shorter example of assigning shortcuts to script items is:
+- `menu.json` must use UTF-8 encoding. By default, it is loaded from the directory containing `NppNodeJS.dll`. To use a different location, choose **Plugins > NppNodeJS > Set menu.json Path...**; this avoids editing files in the `Program Files` directory, which requires administrator permission.
+- `script_folder`: The script directory. Use an absolute path or a relative path based on the directory containing `menu.json`, such as `./script` or `../scripts`.
+- If you change `script_folder`, copy `menu-helper.js` and `package.json` to the directory above it so Node.js can resolve the package import alias.
+- `output_pan_title`: The Output Pane title.
+- `menu`: Defines nested script menus. Each script menu item maps to a `.js` or `.mjs` filename.
+- After editing and saving `menu.json`, choose **Plugins > NppNodeJS > Rebuild Menu** to rebuild the script menu.
+
+### Keyboard shortcuts
+
+Add a shortcut to a menu item by inserting a **tab character `\t`** after its title:
 
 ```json
-"Script 1\tCtrl+1": "script1.js",
-"Script 2\tCtrl+Shift+S": "script2.js",
-"Script 3\tAlt+F8": "script3.js",
-"Script 4\tCtrl+Alt+F12": "script4.js",
-"Script 5\tShift+Tab": "script5.js"
+"My Script\tCtrl+Shift+R": "my-script.js"
 ```
 
-A few points to note:
+Supported modifier keys:
 
-- The shortcut is separated from the visible menu text by a **tab character** (`\t`).
-- The shortcut is registered by Windows through `RegisterHotKey`, so a combination already used by Windows or another application may fail to register.
+| Modifier | Syntax |
+|---|---|
+| Control | `Ctrl` or `Control` |
+| Shift | `Shift` |
+| Alt | `Alt` |
 
-## Running scripts
+Supported keys:
 
-- Click the desired script in the generated menu to execute it. (Feels a bit obvious.)
-- To open a script directly for editing, hold Ctrl and click it in the menu.
+| Key | Syntax |
+|---|---|
+| Letter or digit | `A`–`Z` or `0`–`9` |
+| Function keys | `F1`–`F24` |
+| Tab | `Tab` |
 
-The Output Pane is cleared at the beginning of an execution and reused for subsequent runs. It is not created or shown merely because the plugin starts.
+Every shortcut must include at least one modifier key. Examples include `Ctrl+1`, `Alt+F8`, and `Shift+Tab`. A shortcut consisting only of `Tab` is not registered. Windows registers shortcuts through `RegisterHotKey`, so a combination already in use by Windows or another application may not be available.
 
-## Helper API
+## Writing JavaScript
 
-Add the helper module to a CommonJS script with:
+Save your JavaScript files as **UTF-8**, especially when they contain non-ASCII characters.
+
+After installing the plugin, choose **Plugins > NppNodeJS > Open Scripts Folder** to open the included script examples. You can also hold Ctrl and click a script menu item to open its source in Notepad++.
+
+### Helper API
+
+#### CommonJS and ES Modules
 
 ```js
+/* CommonJS (.js) */
 const npp = require('#menu-helper');
 ```
-
-The same helper can be imported from an ES module:
+Or:
 
 ```js
+/* ES Module (.mjs) */
 import npp from '#menu-helper';
 ```
+
+### Promise-based asynchronous API
+
+The default Helper API is synchronous. For asynchronous work, use the Promise API. Each method's return value is wrapped in a Promise.
+
+```js
+/* CommonJS (.js) */
+const npp = require('#menu-helper').promises;
+```
+Or:
+
+```js
+/* ES Module (.mjs) */
+import nppModule from '#menu-helper';
+const npp = nppModule.promises;
+```
+
+See `script/test-async-alert.js` for an asynchronous example.
+
+**Notes:**
+
+- Do not use the synchronous and asynchronous APIs together in the same script.
+- NppNodeJS checks compatibility between `menu-helper.js` and `NppNodeJS.dll` when a script first calls a Helper API. An error is shown if they are incompatible.
+- If you changed the default `script_folder`, update `menu-helper.js` whenever you update `NppNodeJS.dll` to keep them compatible. You can find the latest `menu-helper.js` in `Notepad++\plugins\NppNodeJS`.
 
 ### API reference
 
-| API | Parameters | Returns | Description |
-|---|---|---|---|
-| `alert(message)` | `message`: string | `Promise<void>` | Shows an alert using the current menu item as the default title. |
-| `alert(message, title)` | `message`: string, `title`: string | `Promise<void>` | Shows an alert with a custom window title. |
-| `prompt(message)` | `message`: string | `Promise<string \| null>` | Shows a prompt with an empty default value. Returns the entered string, or `null` if cancelled. |
-| `prompt(message, defaultValue)` | `message`: string, `defaultValue`: string | `Promise<string \| null>` | Shows a prompt pre-filled with `defaultValue`. |
-| `prompt(message, defaultValue, title)` | `message`: string, `defaultValue`: string, `title`: string | `Promise<string \| null>` | Shows a prompt with a custom window title. |
-| `confirm(message)` | `message`: string | `Promise<boolean>` | Shows a confirmation dialog using the current menu item as the default title. `true` means OK; `false` means Cancel. |
-| `confirm(message, title)` | `message`: string, `title`: string | `Promise<boolean>` | Shows a confirmation dialog with a custom window title. |
-| `getFileName()` | none | `Promise<string>` | Returns the full path of the current document. Returns an empty string when the document has not been saved. |
-| `getCursor()` | none | `Promise<{line: number, column: number}>` | Returns the current cursor position. Both `line` and `column` are **0-based**. |
-| `getLine()` | none | `Promise<string>` | Returns the text of the current line without its line-ending characters. |
-| `setLine(text)` | `text`: string | `Promise<void>` | Replaces the current line while preserving its original line ending. |
-| `getSelection()` | none | `Promise<string>` | Returns the selected text. Returns an empty string when there is no selection. |
-| `setSelection(text)` | `text`: string | `Promise<void>` | Replaces the current selection. If there is no selection, inserts the text at the cursor. |
-| `hasSelection()` | none | `Promise<boolean>` | Returns whether text is currently selected. |
-| `getText()` | none | `Promise<string>` | Returns the complete text of the current document. |
-| `setText(text)` | `text`: string | `Promise<void>` | Replaces the complete text of the current document. |
+| API | Returns | Description |
+|---|---|---|
+| `alert(message, [title])` | `void` | Shows a message dialog. |
+| `prompt(message, [defaultValue], [title])` | `string / null` | Prompts the user for text. Returns `null` when cancelled. |
+| `confirm(message, [title])` | `true / false` | Shows a confirmation dialog. |
+| `getLine()`<br>`setLine(text)` | `string / boolean` | Gets or replaces the current line. |
+| `getSelection()`<br>`setSelection(text)`<br>`hasSelection()` | `string / boolean / boolean` | Gets or replaces the selected text. If no text is selected, `setSelection()` inserts text at the cursor. |
+| `getText()`<br>`setText(text)` | `string / boolean` | Gets or replaces all text in the current document. |
+| `getFileName()` | `string` | Returns the full path of the current document. |
+| `getCursor()` | `{line: number, column: number}` | Returns the current cursor position (**0-based**). |
 
-### Cursor example
-
-```js
-const cursor = await npp.getCursor();
-console.log(cursor.line, cursor.column);
-```
-
-Both values start at `0`, so the first line is `0` and the first column is `0`.
-
-### Document example
-
-```js
-const text = await npp.getText();
-const selection = await npp.getSelection();
-
-if (await npp.hasSelection()) {
-  await npp.setSelection(selection.toUpperCase());
-} else {
-  await npp.setText(text + '\nAdded by NppNodeJS.');
-}
-```
-
-## CommonJS and ES Modules
-
-CommonJS:
-
-```js
-const npp = require('#menu-helper');
-```
-
-ES Module:
-
-```js
-import npp from '#menu-helper';
-```
-
-The included `package.json` defines the package import alias:
-
-```json
-"imports": {
-  "#menu-helper": "./menu-helper.js",
-  "#npp-helper": "./menu-helper.js"
-}
-```
-
-`#menu-helper` is the recommended alias.
-
-## Building from source
+## Building NppNodeJS.dll
 
 `build-x64.bat` uses MinGW / Strawberry GCC.
 
-1. Run `get-cjson.bat` to obtain the required cJSON source files.
-2. Make sure `g++` is available in `PATH`.
+1. Run `get-cjson.bat` to download the required cJSON source files.
+2. Make sure `g++` is available on your `PATH`.
 3. Run `build-x64.bat`.
-4. The DLL will be written to `build/NppNodeJS.dll`.
+4. The DLL is created at `build/NppNodeJS.dll`.
 
 
 ## License

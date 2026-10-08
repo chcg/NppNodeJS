@@ -3,13 +3,12 @@
   "output_pan_title": "Output Pane",
   "menu": {
     "Tests(&1)": {
-      "Output Pane Basic Test": "hello-world.js",
-      "Alert Test (.js)": "test-alert.js",
+      "Output Pane Basic Test\tCtrl+E": "hello-world.js",
+      "Alert Test (.js)\tShift+F1": "test-alert.js",
       "Alert Test (.mjs)": "test-alert.mjs",
-      "Prompt Test (.js)": "test-prompt.js",
-      "Prompt Test (.mjs)": "test-prompt.mjs",
+      "Prompt Test (.js)\tAlt+F1": "test-prompt.js",
       "Confirm Test (.js)": "test-confirm.js",
-      "Confirm Test (.mjs)": "test-confirm.mjs",
+      "Async Alert Demo": "test-async-alert.js",
       "getFileName / getCursor Test": "test-file-cursor.js",
       "getLine / setLine Test": "test-line.js",
       "getSelection / setSelection Test": "test-selection.js",
