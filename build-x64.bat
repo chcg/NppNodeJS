@@ -22,10 +22,13 @@ if not exist third_party\cJSON.h (
   exit /b 1
 )
 
+windres src\NppNodeJS.rc build\NppNodeJS-res.o
+if errorlevel 1 exit /b %errorlevel%
+
 g++ -m64 -std=c++17 -O2 -shared -static -static-libgcc -static-libstdc++ ^
   -DNPPNODEJS_DEBUG_DEFAULT=%DEBUG% ^
   -Isrc -Ithird_party ^
-  src/main.cpp third_party/cJSON.c ^
+  src/main.cpp third_party/cJSON.c build/NppNodeJS-res.o ^
   -o build/NppNodeJS.dll ^
   -luser32 -lgdi32 -lkernel32 -lcomdlg32 -lshell32
 
